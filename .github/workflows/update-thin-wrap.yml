@@ -1,0 +1,152 @@
+name: Update thin-wrap formula
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+  repository_dispatch:
+    types: [thin-wrap-release]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-thin-wrap
+  cancel-in-progress: true
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tap
+        uses: actions/checkout@v4
+
+      - name: Fetch latest thin-wrap release and refresh formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import hashlib
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          api = "https://api.github.com/repos/thunderbyte-labs/thin-wrap/releases/latest"
+          req = urllib.request.Request(
+              api,
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "User-Agent": "thunderbyte-labs-homebrew-tap",
+              },
+          )
+          with urllib.request.urlopen(req) as resp:
+              release = json.load(resp)
+
+          tag = release["tag_name"]
+          version = tag.lstrip("v")
+          assets = {a["name"]: a["browser_download_url"] for a in release.get("assets", [])}
+          needed = {
+              "arm": f"thin-wrap-Darwin-arm64.zip",
+              "intel": f"thin-wrap-Darwin-x86_64.zip",
+          }
+          missing = [name for name in needed.values() if name not in assets]
+          if missing:
+              raise SystemExit(f"Missing Darwin assets on {tag}: {missing}")
+
+          def sha256(url: str) -> str:
+              digest = hashlib.sha256()
+              with urllib.request.urlopen(url) as resp:
+                  while True:
+                      chunk = resp.read(1024 * 1024)
+                      if not chunk:
+                          break
+                      digest.update(chunk)
+              return digest.hexdigest()
+
+          arm_url = assets[needed["arm"]]
+          intel_url = assets[needed["intel"]]
+          arm_sha = sha256(arm_url)
+          intel_sha = sha256(intel_url)
+
+          formula = f'''class ThinWrap < Formula
+            desc "Thin terminal client for any LLM API endpoint"
+            homepage "https://github.com/thunderbyte-labs/thin-wrap"
+            version "{version}"
+            license "AGPL-3.0-only"
+
+            depends_on :macos
+
+            livecheck do
+              url :homepage
+              strategy :github_latest
+            end
+
+            on_macos do
+              on_arm do
+                url "{arm_url}"
+                sha256 "{arm_sha}"
+              end
+              on_intel do
+                url "{intel_url}"
+                sha256 "{intel_sha}"
+              end
+            end
+
+            def install
+              libexec.install Dir["thin-wrap/*"]
+              (bin/"thin-wrap").write <<~EOS
+                #!/bin/bash
+                set -euo pipefail
+                export THIN_WRAP_APP_DIR="#{{libexec}}"
+                CONFIG_DIR="${{THIN_WRAP_CONFIG_DIR:-${{XDG_CONFIG_HOME:-$HOME/.config}}/thin-wrap}}"
+                export THIN_WRAP_CONFIG_DIR="$CONFIG_DIR"
+                mkdir -p "$CONFIG_DIR"
+                if [ ! -f "$CONFIG_DIR/config.json" ] && [ -f "#{{libexec}}/config.json" ]; then
+                  cp "#{{libexec}}/config.json" "$CONFIG_DIR/config.json"
+                fi
+                exec "#{{libexec}}/thin-wrap" "$@"
+              EOS
+            end
+
+            def caveats
+              <<~EOS
+                Configuration files are stored in ~/.config/thin-wrap/ (XDG).
+                Export provider API keys before the first run.
+                Get started with: thin-wrap --help
+              EOS
+            end
+
+            test do
+              assert_match "thin-wrap", shell_output("#{{bin}}/thin-wrap --help")
+            end
+          end
+          '''
+          # The f-string above doubled braces for the generated Ruby formula.
+          formula = formula.replace("#{{libexec}}", "#{libexec}").replace("#{{bin}}", "#{bin}")
+          formula = formula.replace("${{THIN_WRAP_CONFIG_DIR:-${{XDG_CONFIG_HOME:-$HOME/.config}}/thin-wrap}}", "${THIN_WRAP_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/thin-wrap}")
+
+          path = Path("Formula/thin-wrap.rb")
+          old = path.read_text() if path.exists() else ""
+          if old == formula:
+              print(f"Formula already matches {tag}")
+              Path(os.environ["GITHUB_ENV"]).write_text("FORMULA_CHANGED=false\n")
+          else:
+              path.write_text(formula)
+              print(f"Updated formula to {tag}")
+              print(f"  arm64 sha256={arm_sha}")
+              print(f"  intel sha256={intel_sha}")
+              Path(os.environ["GITHUB_ENV"]).write_text(
+                  f"FORMULA_CHANGED=true\nTHIN_WRAP_TAG={tag}\n"
+              )
+          PY
+
+      - name: Commit and push formula
+        if: env.FORMULA_CHANGED == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/thin-wrap.rb
+          git commit -m "thin-wrap ${THIN_WRAP_TAG}"
+          git push
