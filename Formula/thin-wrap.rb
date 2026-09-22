@@ -1,7 +1,7 @@
 class ThinWrap < Formula
   desc "Thin terminal client for any LLM API endpoint"
   homepage "https://github.com/thunderbyte-labs/thin-wrap"
-  version "0.1.7"
+  version "0.1.9"
   license "AGPL-3.0-only"
 
   depends_on :macos
@@ -13,12 +13,12 @@ class ThinWrap < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/thunderbyte-labs/thin-wrap/releases/download/v0.1.7/thin-wrap-Darwin-arm64.zip"
-      sha256 "00d285e57174954f54cb25d7137383a0d8b9a50b9dbf330bc4247f0ba68c9023"
+      url "https://github.com/thunderbyte-labs/thin-wrap/releases/download/v0.1.9/thin-wrap-Darwin-arm64.zip"
+      sha256 "be3ad3d728f7c4f7a4db9aef46dac1c84ac49a4efc5325ee7a4fc9329afc0078"
     end
     on_intel do
-      url "https://github.com/thunderbyte-labs/thin-wrap/releases/download/v0.1.7/thin-wrap-Darwin-x86_64.zip"
-      sha256 "bc79150c12077ba3b2a4c4f04ba146f6489726aa788f18828615d391eff4ad4d"
+      url "https://github.com/thunderbyte-labs/thin-wrap/releases/download/v0.1.9/thin-wrap-Darwin-x86_64.zip"
+      sha256 "e892c87a9375808c969d9bf3497cb23f1740dfbebd2dced1069d94c29b661c73"
     end
   end
 
