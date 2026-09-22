@@ -30,6 +30,7 @@ jobs:
           import hashlib
           import json
           import os
+          import re
           import urllib.request
           from pathlib import Path
 
@@ -47,11 +48,9 @@ jobs:
           tag = release["tag_name"]
           version = tag.lstrip("v")
           assets = {a["name"]: a["browser_download_url"] for a in release.get("assets", [])}
-          needed = {
-              "arm": f"thin-wrap-Darwin-arm64.zip",
-              "intel": f"thin-wrap-Darwin-x86_64.zip",
-          }
-          missing = [name for name in needed.values() if name not in assets]
+          arm_name = "thin-wrap-Darwin-arm64.zip"
+          intel_name = "thin-wrap-Darwin-x86_64.zip"
+          missing = [name for name in (arm_name, intel_name) if name not in assets]
           if missing:
               raise SystemExit(f"Missing Darwin assets on {tag}: {missing}")
 
@@ -65,81 +64,48 @@ jobs:
                       digest.update(chunk)
               return digest.hexdigest()
 
-          arm_url = assets[needed["arm"]]
-          intel_url = assets[needed["intel"]]
+          arm_url = assets[arm_name]
+          intel_url = assets[intel_name]
           arm_sha = sha256(arm_url)
           intel_sha = sha256(intel_url)
 
-          formula = f'''class ThinWrap < Formula
-            desc "Thin terminal client for any LLM API endpoint"
-            homepage "https://github.com/thunderbyte-labs/thin-wrap"
-            version "{version}"
-            license "AGPL-3.0-only"
-
-            depends_on :macos
-
-            livecheck do
-              url :homepage
-              strategy :github_latest
-            end
-
-            on_macos do
-              on_arm do
-                url "{arm_url}"
-                sha256 "{arm_sha}"
-              end
-              on_intel do
-                url "{intel_url}"
-                sha256 "{intel_sha}"
-              end
-            end
-
-            def install
-              libexec.install Dir["thin-wrap/*"]
-              (bin/"thin-wrap").write <<~EOS
-                #!/bin/bash
-                set -euo pipefail
-                export THIN_WRAP_APP_DIR="#{{libexec}}"
-                CONFIG_DIR="${{THIN_WRAP_CONFIG_DIR:-${{XDG_CONFIG_HOME:-$HOME/.config}}/thin-wrap}}"
-                export THIN_WRAP_CONFIG_DIR="$CONFIG_DIR"
-                mkdir -p "$CONFIG_DIR"
-                if [ ! -f "$CONFIG_DIR/config.json" ] && [ -f "#{{libexec}}/config.json" ]; then
-                  cp "#{{libexec}}/config.json" "$CONFIG_DIR/config.json"
-                fi
-                exec "#{{libexec}}/thin-wrap" "$@"
-              EOS
-            end
-
-            def caveats
-              <<~EOS
-                Configuration files are stored in ~/.config/thin-wrap/ (XDG).
-                Export provider API keys before the first run.
-                Get started with: thin-wrap --help
-              EOS
-            end
-
-            test do
-              assert_match "thin-wrap", shell_output("#{{bin}}/thin-wrap --help")
-            end
-          end
-          '''
-          # The f-string above doubled braces for the generated Ruby formula.
-          formula = formula.replace("#{{libexec}}", "#{libexec}").replace("#{{bin}}", "#{bin}")
-          formula = formula.replace("${{THIN_WRAP_CONFIG_DIR:-${{XDG_CONFIG_HOME:-$HOME/.config}}/thin-wrap}}", "${THIN_WRAP_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/thin-wrap}")
-
           path = Path("Formula/thin-wrap.rb")
-          old = path.read_text() if path.exists() else ""
-          if old == formula:
+          text = path.read_text()
+          original = text
+          text = re.sub(r'version "[^"]+"', f'version "{version}"', text, count=1)
+          text = re.sub(
+              r'url "https://github.com/thunderbyte-labs/thin-wrap/releases/download/v[^/]+/thin-wrap-Darwin-arm64.zip"',
+              f'url "{arm_url}"',
+              text,
+              count=1,
+          )
+          text = re.sub(
+              r'url "https://github.com/thunderbyte-labs/thin-wrap/releases/download/v[^/]+/thin-wrap-Darwin-x86_64.zip"',
+              f'url "{intel_url}"',
+              text,
+              count=1,
+          )
+
+          sha_matches = list(re.finditer(r'sha256 "[0-9a-f]{64}"', text))
+          if len(sha_matches) < 2:
+              raise SystemExit(f"Expected two sha256 lines, found {len(sha_matches)}")
+          # First sha256 is arm, second is Intel, matching Formula/thin-wrap.rb.
+          text = text[: sha_matches[0].start()] + f'sha256 "{arm_sha}"' + text[sha_matches[0].end() :]
+          sha_matches = list(re.finditer(r'sha256 "[0-9a-f]{64}"', text))
+          text = text[: sha_matches[1].start()] + f'sha256 "{intel_sha}"' + text[sha_matches[1].end() :]
+
+          env_path = Path(os.environ["GITHUB_ENV"])
+          if text == original:
               print(f"Formula already matches {tag}")
-              Path(os.environ["GITHUB_ENV"]).write_text("FORMULA_CHANGED=false\n")
+              env_path.write_text("FORMULA_CHANGED=false\n")
           else:
-              path.write_text(formula)
+              path.write_text(text)
               print(f"Updated formula to {tag}")
+              print(f"  arm64 {arm_url}")
               print(f"  arm64 sha256={arm_sha}")
+              print(f"  intel {intel_url}")
               print(f"  intel sha256={intel_sha}")
-              Path(os.environ["GITHUB_ENV"]).write_text(
-                  f"FORMULA_CHANGED=true\nTHIN_WRAP_TAG={tag}\n"
-              )
+              env_path.write_text(f"FORMULA_CHANGED=true\nTHIN_WRAP_TAG={tag}\n")
           PY
 
       - name: Commit and push formula
